@@ -6,7 +6,8 @@ import os
 import re
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
+SGT = timezone(timedelta(hours=8))  # Singapore Time UTC+8
 from flask import Flask, request, jsonify
 import anthropic
 import requests
@@ -132,7 +133,7 @@ def send_telegram(payload, analysis):
     prev_bias  = payload.get("prev_bias","")
     prev_proj  = payload.get("prev_proj","")
     emoji      = SIGNAL_EMOJI.get(signal,"🔔")
-    ts         = datetime.now(timezone.utc).strftime("%H:%M UTC")
+    ts         = datetime.now(SGT).strftime("%H:%M SGT")
     q_icon     = "🟢" if analysis["quality"] == "STRONG" else "🟡" if analysis["quality"] == "MODERATE" else "🔴"
     c_icon     = "🟢" if analysis["confidence"] >= 70 else "🟡" if analysis["confidence"] >= 50 else "🔴"
 
@@ -172,7 +173,7 @@ def send_telegram(payload, analysis):
         except Exception as e:
             log.error(f"Telegram error: {e}")
         return
-    ts     = datetime.now(timezone.utc).strftime("%H:%M UTC")
+    ts     = datetime.now(SGT).strftime("%H:%M SGT")
     q_icon = "🟢" if analysis["quality"] == "STRONG" else "🟡" if analysis["quality"] == "MODERATE" else "🔴"
     c_icon = "🟢" if analysis["confidence"] >= 70 else "🟡" if analysis["confidence"] >= 50 else "🔴"
 
@@ -235,7 +236,7 @@ def webhook():
         latest_signal = {
             **payload,
             **analysis,
-            "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            "timestamp": datetime.now(SGT).strftime("%Y-%m-%dT%H:%M:%S+08:00")
         }
 
         return jsonify({"status":"sent" if sent else "telegram_failed","signal":signal}), 200
