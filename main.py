@@ -22,12 +22,14 @@ TELEGRAM_CHAT_ID   = os.environ.get("TELEGRAM_CHAT_ID", "")
 PORT               = int(os.environ.get("PORT", 8080))
 
 SIGNAL_EMOJI = {
-    "TMN+":       "⚡🟢",
-    "TMN-":       "⚡🔴",
-    "BUY":        "✅🟢",
-    "SELL":       "✅🔴",
-    "TMN+ Watch": "👀🟢",
-    "TMN- Watch": "👀🔴",
+    "TMN+":        "⚡🟢",
+    "TMN-":        "⚡🔴",
+    "BUY":         "✅🟢",
+    "SELL":        "✅🔴",
+    "TMN+ Watch":  "👀🟢",
+    "TMN- Watch":  "👀🔴",
+    "BIAS CHANGE": "🔄",
+    "PROJ CHANGE": "📊",
 }
 
 latest_signal = {}
@@ -126,7 +128,50 @@ def send_telegram(payload, analysis):
 
     signal     = payload.get("signal","")
     projection = payload.get("projection","UNCERTAIN")
-    emoji  = SIGNAL_EMOJI.get(signal,"🔔")
+    bias_dir   = payload.get("bias_dir","NEUTRAL")
+    prev_bias  = payload.get("prev_bias","")
+    prev_proj  = payload.get("prev_proj","")
+    emoji      = SIGNAL_EMOJI.get(signal,"🔔")
+    ts         = datetime.now(timezone.utc).strftime("%H:%M UTC")
+    q_icon     = "🟢" if analysis["quality"] == "STRONG" else "🟡" if analysis["quality"] == "MODERATE" else "🔴"
+    c_icon     = "🟢" if analysis["confidence"] >= 70 else "🟡" if analysis["confidence"] >= 50 else "🔴"
+
+    # Simple notification for state changes — no full AI setup needed
+    if signal == "BIAS CHANGE":
+        b_icon = "🟢" if bias_dir == "BIAS UP" else "🔴" if bias_dir == "BIAS DOWN" else "⚪"
+        msg = (
+            f"🔄 <b>BIAS CHANGED — {payload.get('symbol')} {payload.get('timeframe')}m</b>\n"
+            f"{prev_bias} → <b>{b_icon} {bias_dir}</b>\n"
+            f"Price: {payload.get('price')} · {ts}\n"
+            f"Projection: {projection} | HTF: {payload.get('htf')} | Score: {payload.get('bias_score')}"
+        )
+        try:
+            requests.post(
+                f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+                json={"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "HTML"},
+                timeout=10
+            )
+        except Exception as e:
+            log.error(f"Telegram error: {e}")
+        return
+
+    if signal == "PROJ CHANGE":
+        p_icon = "📈" if "UP" in projection else "📉" if "DOWN" in projection else "↔"
+        msg = (
+            f"📊 <b>PROJECTION CHANGED — {payload.get('symbol')} {payload.get('timeframe')}m</b>\n"
+            f"{prev_proj} → <b>{p_icon} {projection}</b>\n"
+            f"Price: {payload.get('price')} · {ts}\n"
+            f"Bias: {bias_dir} | HTF: {payload.get('htf')} | RSI: {payload.get('rsi')}"
+        )
+        try:
+            requests.post(
+                f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+                json={"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "HTML"},
+                timeout=10
+            )
+        except Exception as e:
+            log.error(f"Telegram error: {e}")
+        return
     ts     = datetime.now(timezone.utc).strftime("%H:%M UTC")
     q_icon = "🟢" if analysis["quality"] == "STRONG" else "🟡" if analysis["quality"] == "MODERATE" else "🔴"
     c_icon = "🟢" if analysis["confidence"] >= 70 else "🟡" if analysis["confidence"] >= 50 else "🔴"
@@ -134,7 +179,7 @@ def send_telegram(payload, analysis):
     msg = (
         f"{emoji} <b>{signal} — {payload.get('symbol')} {payload.get('timeframe')}m</b>\n"
         f"Price: <b>{payload.get('price')}</b> · {ts}\n"
-        f"Projection: <b>{projection}</b>\n"
+        f"Bias: <b>{bias_dir}</b> | Projection: <b>{projection}</b>\n"
         f"{'─'*28}\n\n"
         f"{q_icon} <b>Quality:</b> {analysis['quality']}\n\n"
         f"📈 <b>Context:</b>\n{analysis['context']}\n\n"
@@ -179,7 +224,7 @@ def webhook():
         log.info(f"Webhook received: signal={signal} symbol={payload.get('symbol')} price={payload.get('price')}")
         log.info(f"Full payload: {json.dumps(payload)}")
 
-        allowed = ["TMN+","TMN-","BUY","SELL","TMN+ Watch","TMN- Watch"]
+        allowed = ["TMN+","TMN-","BUY","SELL","TMN+ Watch","TMN- Watch","BIAS CHANGE","PROJ CHANGE"]
         if signal not in allowed:
             log.info(f"Signal '{signal}' not in allowed list — ignored")
             return jsonify({"status":"ignored","signal":signal}), 200
