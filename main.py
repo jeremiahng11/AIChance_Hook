@@ -31,6 +31,7 @@ SIGNAL_EMOJI = {
     "TMN- Watch":  "👀🔴",
     "BIAS CHANGE": "🔄",
     "PROJ CHANGE": "📊",
+    "DO NOTHING":  "⏸",
 }
 
 latest_signal = {}
@@ -173,6 +174,27 @@ def send_telegram(payload, analysis):
         except Exception as e:
             log.error(f"Telegram error: {e}")
         return
+
+    if signal == "DO NOTHING":
+        dn_reason = payload.get("dn_reason", "no clear edge")
+        dn_watch  = payload.get("dn_watch", "")
+        msg = (
+            f"⏸ <b>DO NOTHING — {payload.get('symbol')} {payload.get('timeframe')}m</b>\n"
+            f"Price: {payload.get('price')} · {ts}\n"
+            f"{'─'*28}\n\n"
+            f"<b>Reason:</b> {dn_reason}\n\n"
+            f"<b>{dn_watch}</b>\n\n"
+            f"Bias: {bias_dir} | Proj: {projection} | HTF: {payload.get('htf')}"
+        )
+        try:
+            requests.post(
+                f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+                json={"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "HTML"},
+                timeout=10
+            )
+        except Exception as e:
+            log.error(f"Telegram error: {e}")
+        return
     ts     = datetime.now(SGT).strftime("%H:%M SGT")
     q_icon = "🟢" if analysis["quality"] == "STRONG" else "🟡" if analysis["quality"] == "MODERATE" else "🔴"
     c_icon = "🟢" if analysis["confidence"] >= 70 else "🟡" if analysis["confidence"] >= 50 else "🔴"
@@ -225,7 +247,7 @@ def webhook():
         log.info(f"Webhook received: signal={signal} symbol={payload.get('symbol')} price={payload.get('price')}")
         log.info(f"Full payload: {json.dumps(payload)}")
 
-        allowed = ["TMN+","TMN-","BUY","SELL","TMN+ Watch","TMN- Watch","BIAS CHANGE","PROJ CHANGE"]
+        allowed = ["TMN+","TMN-","BUY","SELL","TMN+ Watch","TMN- Watch","BIAS CHANGE","PROJ CHANGE","DO NOTHING"]
         if signal not in allowed:
             log.info(f"Signal '{signal}' not in allowed list — ignored")
             return jsonify({"status":"ignored","signal":signal}), 200
