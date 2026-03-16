@@ -56,6 +56,7 @@ def analyse_signal(payload):
     tl_score   = payload.get("tl_score", None)
     timeframe  = payload.get("timeframe","5")
     sym_mode   = payload.get("sym_mode","Metals")
+    projection = payload.get("projection","UNCERTAIN")
 
     direction = "BULLISH" if "+" in signal or signal == "BUY" else "BEARISH"
     zone = ("ABOVE SELL THRESHOLD" if price >= sell_thresh
@@ -67,6 +68,7 @@ def analyse_signal(payload):
 Signal: {signal} ({direction}) at {price}
 ATR: {atr} | RSI: {rsi} | Bias Score: {bias_score}
 HTF: {htf} | A5 Distance: {a5_dist}x | STMN: {"YES" if stmn else "NO"}
+Projection: {projection}
 TMA Lower: {tma_lower} | Middle: {tma_middle} | Upper: {tma_upper}
 Buy Thresh: {buy_thresh} | Sell Thresh: {sell_thresh} | Zone: {zone}
 {f"TL Score: {tl_score}" if tl_score else ""}
@@ -122,7 +124,8 @@ def send_telegram(payload, analysis):
         log.error("TELEGRAM_CHAT_ID not set!")
         return False
 
-    signal = payload.get("signal","")
+    signal     = payload.get("signal","")
+    projection = payload.get("projection","UNCERTAIN")
     emoji  = SIGNAL_EMOJI.get(signal,"🔔")
     ts     = datetime.now(timezone.utc).strftime("%H:%M UTC")
     q_icon = "🟢" if analysis["quality"] == "STRONG" else "🟡" if analysis["quality"] == "MODERATE" else "🔴"
@@ -131,6 +134,7 @@ def send_telegram(payload, analysis):
     msg = (
         f"{emoji} <b>{signal} — {payload.get('symbol')} {payload.get('timeframe')}m</b>\n"
         f"Price: <b>{payload.get('price')}</b> · {ts}\n"
+        f"Projection: <b>{projection}</b>\n"
         f"{'─'*28}\n\n"
         f"{q_icon} <b>Quality:</b> {analysis['quality']}\n\n"
         f"📈 <b>Context:</b>\n{analysis['context']}\n\n"
