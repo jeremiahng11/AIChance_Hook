@@ -1,5 +1,5 @@
 """
-AI Chance v1.3 — Webhook Server
+AI Chance v1.2 — Webhook Server
 """
 
 import os
@@ -32,6 +32,8 @@ SIGNAL_EMOJI = {
     "BIAS CHANGE": "🔄",
     "PROJ CHANGE": "📊",
     "DO NOTHING":  "⏸",
+    "STMN+":       "🎯🟢",
+    "STMN-":       "🎯🔴",
 }
 
 latest_signal = {}
@@ -182,6 +184,22 @@ def send_telegram(payload, analysis):
             f"Bias: {bias_dir} | Proj: {projection} | HTF: {payload.get('htf')}"
         )
 
+    if signal in ("STMN+", "STMN-"):
+        zone     = payload.get("zone","")
+        is_bull  = signal == "STMN+"
+        s_icon   = "🟢" if is_bull else "🔴"
+        s_dir    = "BUY zone" if is_bull else "SELL zone"
+        watch    = "Watch for TMN+ confirmation" if is_bull else "Watch for TMN- confirmation"
+        return post_msg(
+            f"🎯{s_icon} <b>{signal} — {payload.get('symbol')} {payload.get('timeframe')}m</b>\n"
+            f"Price entered <b>{s_dir}</b> · {ts}\n"
+            f"Price: {payload.get('price')} | Zone: {zone}\n"
+            f"{'─'*28}\n"
+            f"Bias: {bias_dir} | HTF: {payload.get('htf')} | RSI: {payload.get('rsi')}\n"
+            f"Proj: {projection} | A5 dist: {payload.get('a5_dist')}x\n\n"
+            f"⚠️ <b>{watch}</b>"
+        )
+
     # Full AI analysis for trading signals
     EMAP = {"TMN+":"⚡🟢","TMN-":"⚡🔴","BUY":"✅🟢","SELL":"✅🔴","TMN+ Watch":"👀🟢","TMN- Watch":"👀🔴"}
     emoji  = EMAP.get(signal,"🔔")
@@ -216,13 +234,13 @@ def webhook():
         log.info(f"Webhook received: signal={signal} symbol={payload.get('symbol')} price={payload.get('price')}")
         log.info(f"Full payload: {json.dumps(payload)}")
 
-        allowed = ["TMN+","TMN-","BUY","SELL","TMN+ Watch","TMN- Watch","BIAS CHANGE","PROJ CHANGE","DO NOTHING"]
+        allowed = ["TMN+","TMN-","BUY","SELL","TMN+ Watch","TMN- Watch","BIAS CHANGE","PROJ CHANGE","DO NOTHING","STMN+","STMN-"]
         if signal not in allowed:
             log.info(f"Signal '{signal}' not in allowed list — ignored")
             return jsonify({"status":"ignored","signal":signal}), 200
 
         # Only call Claude AI for actual trading signals — not lightweight state changes
-        lightweight = ["BIAS CHANGE","PROJ CHANGE","DO NOTHING"]
+        lightweight = ["BIAS CHANGE","PROJ CHANGE","DO NOTHING","STMN+","STMN-"]
         if signal in lightweight:
             analysis = {"quality":"","direction":"","entry":"","sl":"","tp1":"","tp2":"","rr":"","confidence":0,"context":"","raw":""}
         else:
