@@ -1,5 +1,5 @@
 """
-AI Chance v1.2 — Webhook Server
+AI Chance v1.3 — Webhook Server
 """
 
 import os
@@ -147,17 +147,17 @@ def send_telegram(payload, analysis):
             f"Price: {payload.get('price')} · {ts}\n"
             f"Projection: {projection} | HTF: {payload.get('htf')} | Score: {payload.get('bias_score')}"
         )
+        log.info(f"Sending BIAS CHANGE to Telegram: {prev_bias} → {bias_dir}")
         try:
-            requests.post(
+            resp = requests.post(
                 f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
                 json={"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "HTML"},
                 timeout=10
             )
+            log.info(f"BIAS CHANGE Telegram result: {resp.json()}")
         except Exception as e:
             log.error(f"Telegram error: {e}")
-        return
-
-    if signal == "PROJ CHANGE":
+        return True
         p_icon = "📈" if "UP" in projection else "📉" if "DOWN" in projection else "↔"
         msg = (
             f"📊 <b>PROJECTION CHANGED — {payload.get('symbol')} {payload.get('timeframe')}m</b>\n"
@@ -165,15 +165,17 @@ def send_telegram(payload, analysis):
             f"Price: {payload.get('price')} · {ts}\n"
             f"Bias: {bias_dir} | HTF: {payload.get('htf')} | RSI: {payload.get('rsi')}"
         )
+        log.info(f"Sending PROJ CHANGE to Telegram: {prev_proj} → {projection}")
         try:
-            requests.post(
+            resp = requests.post(
                 f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
                 json={"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "HTML"},
                 timeout=10
             )
+            log.info(f"PROJ CHANGE Telegram result: {resp.json()}")
         except Exception as e:
             log.error(f"Telegram error: {e}")
-        return
+        return True
 
     if signal == "DO NOTHING":
         dn_reason = payload.get("dn_reason", "no clear edge")
@@ -186,15 +188,17 @@ def send_telegram(payload, analysis):
             f"<b>{dn_watch}</b>\n\n"
             f"Bias: {bias_dir} | Proj: {projection} | HTF: {payload.get('htf')}"
         )
+        log.info(f"Sending DO NOTHING to Telegram: {dn_reason}")
         try:
-            requests.post(
+            resp = requests.post(
                 f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
                 json={"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "HTML"},
                 timeout=10
             )
+            log.info(f"DO NOTHING Telegram result: {resp.json()}")
         except Exception as e:
             log.error(f"Telegram error: {e}")
-        return
+        return True
     ts     = datetime.now(SGT).strftime("%H:%M SGT")
     q_icon = "🟢" if analysis["quality"] == "STRONG" else "🟡" if analysis["quality"] == "MODERATE" else "🔴"
     c_icon = "🟢" if analysis["confidence"] >= 70 else "🟡" if analysis["confidence"] >= 50 else "🔴"
