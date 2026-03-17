@@ -252,8 +252,14 @@ def webhook():
             log.info(f"Signal '{signal}' not in allowed list — ignored")
             return jsonify({"status":"ignored","signal":signal}), 200
 
-        analysis = analyse_signal(payload)
-        sent     = send_telegram(payload, analysis)
+        # Only call Claude AI for actual trading signals — not lightweight state changes
+        lightweight = ["BIAS CHANGE","PROJ CHANGE","DO NOTHING"]
+        if signal in lightweight:
+            analysis = {"quality":"","direction":"","entry":"","sl":"","tp1":"","tp2":"","rr":"","confidence":0,"context":"","raw":""}
+        else:
+            analysis = analyse_signal(payload)
+
+        sent = send_telegram(payload, analysis)
 
         latest_signal = {
             **payload,
