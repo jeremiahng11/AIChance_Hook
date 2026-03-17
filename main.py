@@ -227,6 +227,8 @@ def webhook():
         send_telegram(payload, analysis)
 
         latest_signal = {**payload, **analysis,
+                         "dn_reason": analysis.get("context",""),
+                         "dn_watch":  analysis.get("dn_watch_ai",""),
                          "timestamp": datetime.now(SGT).strftime("%Y-%m-%dT%H:%M:%S+08:00")}
 
         return jsonify({"status":"ok"}), 200
