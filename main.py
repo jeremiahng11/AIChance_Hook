@@ -1,21 +1,18 @@
 """
 AI Chance v1.3 — Webhook Server
+TradingView → Claude AI → Telegram + M5Stack
 """
 
-import os
-import re
-import json
-import logging
+import os, re, json, logging
 from datetime import datetime, timezone, timedelta
-SGT = timezone(timedelta(hours=8))  # Singapore Time UTC+8
 from flask import Flask, request, jsonify
-import anthropic
-import requests
+import anthropic, requests
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
 
 app = Flask(__name__)
+SGT = timezone(timedelta(hours=8))
 
 ANTHROPIC_API_KEY  = os.environ.get("ANTHROPIC_API_KEY", "")
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
@@ -23,106 +20,72 @@ TELEGRAM_CHAT_ID   = os.environ.get("TELEGRAM_CHAT_ID", "")
 PORT               = int(os.environ.get("PORT", 8080))
 
 SIGNAL_EMOJI = {
-    "TMN+":        "⚡🟢",
-    "TMN-":        "⚡🔴",
-    "BUY":         "✅🟢",
-    "SELL":        "✅🔴",
-    "TMN+ Watch":  "👀🟢",
-    "TMN- Watch":  "👀🔴",
-    "BIAS CHANGE": "🔄",
-    "PROJ CHANGE": "📊",
-    "DO NOTHING":  "⏸",
-    "STMN+":       "🎯🟢",
-    "STMN-":       "🎯🔴",
+    "TMN+":"⚡🟢","TMN-":"⚡🔴","BUY":"✅🟢","SELL":"✅🔴",
+    "TMN+ Watch":"👀🟢","TMN- Watch":"👀🔴",
+    "BIAS CHANGE":"🔄","PROJ CHANGE":"📊","DO NOTHING":"⏸",
+    "STMN+":"🎯🟢","STMN-":"🎯🔴",
 }
 
 latest_signal = {}
 
+# ── CLAUDE ANALYSIS ───────────────────────────────────────
 def analyse_signal(payload):
-    log.info("Calling Claude API...")
-    if not ANTHROPIC_API_KEY:
-        log.error("ANTHROPIC_API_KEY not set!")
-        return {"quality":"WEAK","direction":"WAIT","entry":str(payload.get("price","")),"sl":"","tp1":"","tp2":"","rr":"0","confidence":0,"context":"API key not configured","raw":""}
-
-    client     = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-    signal     = payload.get("signal","UNKNOWN")
-    symbol     = payload.get("symbol","UNKNOWN")
-    price      = payload.get("price", 0)
-    bias_score = payload.get("bias_score", 0)
-    htf        = payload.get("htf","")
-    a5_dist    = payload.get("a5_dist", 0)
-    stmn       = payload.get("stmn", 0)
-    atr        = payload.get("atr", 0)
-    tma_lower  = payload.get("tma_lower", 0)
-    tma_upper  = payload.get("tma_upper", 0)
-    tma_middle = payload.get("tma_middle", 0)
-    buy_thresh = payload.get("buy_thresh", 0)
-    sell_thresh= payload.get("sell_thresh", 0)
-    rsi        = payload.get("rsi", 0)
-    tl_score   = payload.get("tl_score", None)
-    timeframe  = payload.get("timeframe","5")
-    sym_mode   = payload.get("sym_mode","Metals")
-    projection = payload.get("projection","UNCERTAIN")
+    client      = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    signal      = payload.get("signal","")
+    symbol      = payload.get("symbol","")
+    price       = payload.get("price", 0)
+    bias_score  = payload.get("bias_score", 0)
+    htf         = payload.get("htf","")
+    a5_dist     = payload.get("a5_dist", 0)
+    stmn        = payload.get("stmn", 0)
+    atr         = payload.get("atr", 0)
+    tma_lower   = payload.get("tma_lower", 0)
+    tma_upper   = payload.get("tma_upper", 0)
+    tma_middle  = payload.get("tma_middle", 0)
+    buy_thresh  = payload.get("buy_thresh", 0)
+    sell_thresh = payload.get("sell_thresh", 0)
+    rsi         = payload.get("rsi", 0)
+    tl_score    = payload.get("tl_score", None)
+    timeframe   = payload.get("timeframe","5")
+    sym_mode    = payload.get("sym_mode","Metals")
+    projection  = payload.get("projection","UNCERTAIN")
 
     direction = "BULLISH" if "+" in signal or signal == "BUY" else "BEARISH"
     zone = ("ABOVE SELL THRESHOLD" if price >= sell_thresh
             else "BELOW BUY THRESHOLD" if price <= buy_thresh
             else "NEUTRAL ZONE")
 
-    # DO NOTHING gets a focused explanation instead of trade setup
     if signal == "DO NOTHING":
         prompt = f"""You are an expert trading analyst for {sym_mode} ({symbol}) on a {timeframe}m chart.
-
-The AI Chance indicator has determined NO TRADE should be taken right now.
-
-Market context:
-Price: {price} | ATR: {atr} | RSI: {rsi}
-Bias Score: {bias_score} | Bias: {"BULL" if bias_score >= 2 else "BEAR" if bias_score <= -2 else "NEUTRAL"}
-HTF: {htf} | A5 Distance: {a5_dist}x | STMN: {"YES" if stmn else "NO"}
-Projection: {projection}
-Buy Thresh: {buy_thresh} | Sell Thresh: {sell_thresh} | Zone: {zone}
+No trade should be taken right now.
+Price: {price} | ATR: {atr} | RSI: {rsi} | Bias: {bias_score} | HTF: {htf}
+A5 Dist: {a5_dist}x | Projection: {projection} | Zone: {zone}
 
 Respond in EXACTLY this format:
-
-REASON: [1 sentence explaining WHY no trade — what specific condition is preventing a clean entry]
-WATCH: [1 sentence on what to watch for next — the specific price level or event that would change this]
+REASON: [1 sentence why no trade]
+WATCH: [1 sentence what to watch for]
 CONFIDENCE: [0-100]"""
-
         try:
-            response = client.messages.create(
-                model="claude-sonnet-4-20250514",
-                max_tokens=150,
-                messages=[{"role": "user", "content": prompt}]
-            )
-            text = response.content[0].text
-            def extract(key):
-                import re
-                m = re.search(rf"^{key}:\s*(.+)$", text, re.MULTILINE)
-                return m.group(1).strip() if m else ""
-            return {
-                "quality": "WAIT", "direction": "WAIT",
-                "entry": "", "sl": "", "tp1": "", "tp2": "", "rr": "",
-                "confidence": float(extract("CONFIDENCE") or 0),
-                "context": extract("REASON"),
-                "dn_watch_ai": extract("WATCH"),
-                "raw": text
-            }
+            r = client.messages.create(model="claude-sonnet-4-20250514", max_tokens=150,
+                messages=[{"role":"user","content":prompt}])
+            text = r.content[0].text
+            def ex(k): m=re.search(rf"^{k}:\s*(.+)$",text,re.MULTILINE); return m.group(1).strip() if m else ""
+            return {"quality":"","direction":"WAIT","entry":"","sl":"","tp1":"","tp2":"","rr":"",
+                    "confidence":float(ex("CONFIDENCE") or 0),"context":ex("REASON"),
+                    "dn_watch_ai":ex("WATCH"),"raw":text}
         except Exception as e:
-            log.error(f"Claude DO NOTHING error: {e}")
-            return {"quality":"","direction":"","entry":"","sl":"","tp1":"","tp2":"","rr":"","confidence":0,"context":"No clear edge — wait for better setup","dn_watch_ai":"","raw":""}
+            return {"quality":"","direction":"WAIT","entry":"","sl":"","tp1":"","tp2":"","rr":"",
+                    "confidence":0,"context":"No clear edge","dn_watch_ai":"","raw":""}
 
     prompt = f"""You are an expert trading analyst for {sym_mode} ({symbol}) on a {timeframe}m chart.
-
 Signal: {signal} ({direction}) at {price}
-ATR: {atr} | RSI: {rsi} | Bias Score: {bias_score}
-HTF: {htf} | A5 Distance: {a5_dist}x | STMN: {"YES" if stmn else "NO"}
-Projection: {projection}
+ATR: {atr} | RSI: {rsi} | Bias Score: {bias_score} | HTF: {htf}
+A5 Distance: {a5_dist}x | STMN: {"YES" if stmn else "NO"} | Projection: {projection}
 TMA Lower: {tma_lower} | Middle: {tma_middle} | Upper: {tma_upper}
 Buy Thresh: {buy_thresh} | Sell Thresh: {sell_thresh} | Zone: {zone}
 {f"TL Score: {tl_score}" if tl_score else ""}
 
 Respond in EXACTLY this format:
-
 QUALITY: [STRONG or MODERATE or WEAK]
 DIRECTION: [BUY or SELL or WAIT]
 ENTRY: [price or range]
@@ -134,54 +97,33 @@ CONFIDENCE: [0-100]
 CONTEXT: [2-3 sentences]"""
 
     try:
-        response = client.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=400,
-            messages=[{"role": "user", "content": prompt}]
-        )
-        text = response.content[0].text
-        log.info(f"Claude response received: {text[:100]}")
-
-        def extract(key):
-            m = re.search(rf"^{key}:\s*(.+)$", text, re.MULTILINE)
-            return m.group(1).strip() if m else ""
-
-        return {
-            "quality":    extract("QUALITY"),
-            "direction":  extract("DIRECTION"),
-            "entry":      extract("ENTRY"),
-            "sl":         extract("SL"),
-            "tp1":        extract("TP1"),
-            "tp2":        extract("TP2"),
-            "rr":         extract("RR"),
-            "confidence": float(extract("CONFIDENCE") or 0),
-            "context":    extract("CONTEXT"),
-            "raw":        text
-        }
+        r = client.messages.create(model="claude-sonnet-4-20250514", max_tokens=400,
+            messages=[{"role":"user","content":prompt}])
+        text = r.content[0].text
+        log.info(f"Claude: {text[:80]}")
+        def ex(k): m=re.search(rf"^{k}:\s*(.+)$",text,re.MULTILINE); return m.group(1).strip() if m else ""
+        return {"quality":ex("QUALITY"),"direction":ex("DIRECTION"),"entry":ex("ENTRY"),
+                "sl":ex("SL"),"tp1":ex("TP1"),"tp2":ex("TP2"),"rr":ex("RR"),
+                "confidence":float(ex("CONFIDENCE") or 0),"context":ex("CONTEXT"),"raw":text}
     except Exception as e:
         log.error(f"Claude error: {e}")
-        return {"quality":"WEAK","direction":"WAIT","entry":str(price),"sl":"","tp1":"","tp2":"","rr":"0","confidence":0,"context":f"AI error: {e}","raw":""}
+        return {"quality":"","direction":"","entry":"","sl":"","tp1":"","tp2":"","rr":"",
+                "confidence":0,"context":f"AI error: {e}","raw":""}
 
-
+# ── TELEGRAM ──────────────────────────────────────────────
 def send_telegram(payload, analysis):
-    log.info(f"Sending Telegram to chat_id={TELEGRAM_CHAT_ID}")
-    if not TELEGRAM_BOT_TOKEN:
-        log.error("TELEGRAM_BOT_TOKEN not set!")
-        return False
-    if not TELEGRAM_CHAT_ID:
-        log.error("TELEGRAM_CHAT_ID not set!")
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         return False
 
     def post_msg(msg):
         try:
             resp = requests.post(
                 f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
-                json={"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "HTML"},
-                timeout=10
-            )
+                json={"chat_id":TELEGRAM_CHAT_ID,"text":msg,"parse_mode":"HTML"},
+                timeout=10)
             d = resp.json()
             if d.get("ok"):
-                log.info("Telegram message sent ✓")
+                log.info("Telegram sent ✓")
                 return True
             log.error(f"Telegram failed: {d}")
             return False
@@ -198,55 +140,46 @@ def send_telegram(payload, analysis):
 
     if signal == "BIAS CHANGE":
         b_icon = "🟢" if bias_dir=="BIAS UP" else "🔴" if bias_dir=="BIAS DOWN" else "⚪"
-        return post_msg(
-            f"🔄 <b>BIAS CHANGED — {payload.get('symbol')} {payload.get('timeframe')}m</b>\n"
-            f"{prev_bias} → <b>{b_icon} {bias_dir}</b>\n"
-            f"Price: {payload.get('price')} · {ts}\n"
-            f"Projection: {projection} | HTF: {payload.get('htf')} | Score: {payload.get('bias_score')}"
-        )
+        return post_msg(f"🔄 <b>BIAS CHANGED — {payload.get('symbol')} {payload.get('timeframe')}m</b>\n"
+                        f"{prev_bias} → <b>{b_icon} {bias_dir}</b>\n"
+                        f"Price: {payload.get('price')} · {ts}\n"
+                        f"Projection: {projection} | HTF: {payload.get('htf')} | Score: {payload.get('bias_score')}")
 
     if signal == "PROJ CHANGE":
         p_icon = "📈" if "UP" in projection else "📉" if "DOWN" in projection else "↔"
-        return post_msg(
-            f"📊 <b>PROJECTION CHANGED — {payload.get('symbol')} {payload.get('timeframe')}m</b>\n"
-            f"{prev_proj} → <b>{p_icon} {projection}</b>\n"
-            f"Price: {payload.get('price')} · {ts}\n"
-            f"Bias: {bias_dir} | HTF: {payload.get('htf')} | RSI: {payload.get('rsi')}"
-        )
+        return post_msg(f"📊 <b>PROJECTION CHANGED — {payload.get('symbol')} {payload.get('timeframe')}m</b>\n"
+                        f"{prev_proj} → <b>{p_icon} {projection}</b>\n"
+                        f"Price: {payload.get('price')} · {ts}\n"
+                        f"Bias: {bias_dir} | HTF: {payload.get('htf')} | RSI: {payload.get('rsi')}")
 
     if signal == "DO NOTHING":
-        dn_reason  = analysis.get("context","") or payload.get("dn_reason","No clear edge")
-        dn_watch   = analysis.get("dn_watch_ai","") or payload.get("dn_watch","Watch bias label for direction")
-        confidence = int(analysis.get("confidence", 0))
-        c_icon     = "🟢" if confidence >= 70 else "🟡" if confidence >= 50 else "🔴"
-        return post_msg(
-            f"⏸ <b>DO NOTHING — {payload.get('symbol')} {payload.get('timeframe')}m</b>\n"
-            f"Price: {payload.get('price')} · {ts}\n"
-            f"{'─'*28}\n\n"
-            f"<b>Reason:</b> {dn_reason}\n\n"
-            f"<b>Watch:</b> {dn_watch}\n\n"
-            f"Bias: {bias_dir} | Proj: {projection} | HTF: {payload.get('htf')}\n"
-            f"{c_icon} Confidence: {confidence}%"
-        )
+        dn_reason  = analysis.get("context","No clear edge")
+        dn_watch   = analysis.get("dn_watch_ai","Watch bias label for direction")
+        confidence = int(analysis.get("confidence",0))
+        c_icon     = "🟢" if confidence>=70 else "🟡" if confidence>=50 else "🔴"
+        return post_msg(f"⏸ <b>DO NOTHING — {payload.get('symbol')} {payload.get('timeframe')}m</b>\n"
+                        f"Price: {payload.get('price')} · {ts}\n"
+                        f"{'─'*28}\n\n"
+                        f"<b>Reason:</b> {dn_reason}\n\n"
+                        f"<b>Watch:</b> {dn_watch}\n\n"
+                        f"Bias: {bias_dir} | Proj: {projection} | HTF: {payload.get('htf')}\n"
+                        f"{c_icon} Confidence: {confidence}%")
 
-    if signal in ("STMN+", "STMN-"):
-        zone     = payload.get("zone","")
-        is_bull  = signal == "STMN+"
-        s_icon   = "🟢" if is_bull else "🔴"
-        s_dir    = "BUY zone" if is_bull else "SELL zone"
-        watch    = "Watch for TMN+ confirmation" if is_bull else "Watch for TMN- confirmation"
-        return post_msg(
-            f"🎯{s_icon} <b>{signal} — {payload.get('symbol')} {payload.get('timeframe')}m</b>\n"
-            f"Price entered <b>{s_dir}</b> · {ts}\n"
-            f"Price: {payload.get('price')} | Zone: {zone}\n"
-            f"{'─'*28}\n"
-            f"Bias: {bias_dir} | HTF: {payload.get('htf')} | RSI: {payload.get('rsi')}\n"
-            f"Proj: {projection} | A5 dist: {payload.get('a5_dist')}x\n\n"
-            f"⚠️ <b>{watch}</b>"
-        )
+    if signal in ("STMN+","STMN-"):
+        is_bull = signal == "STMN+"
+        s_icon  = "🟢" if is_bull else "🔴"
+        zone    = payload.get("zone","")
+        return post_msg(f"🎯{s_icon} <b>{signal} — {payload.get('symbol')} {payload.get('timeframe')}m</b>\n"
+                        f"Price entered <b>{'BUY' if is_bull else 'SELL'} zone</b> · {ts}\n"
+                        f"Price: {payload.get('price')} | Zone: {zone}\n"
+                        f"{'─'*28}\n"
+                        f"Bias: {bias_dir} | HTF: {payload.get('htf')} | RSI: {payload.get('rsi')}\n"
+                        f"Proj: {projection} | A5 dist: {payload.get('a5_dist')}x\n\n"
+                        f"⚠️ <b>Watch for {signal} confirmation</b>")
 
     # Full AI analysis for trading signals
-    EMAP = {"TMN+":"⚡🟢","TMN-":"⚡🔴","BUY":"✅🟢","SELL":"✅🔴","TMN+ Watch":"👀🟢","TMN- Watch":"👀🔴"}
+    EMAP = {"TMN+":"⚡🟢","TMN-":"⚡🔴","BUY":"✅🟢","SELL":"✅🔴",
+            "TMN+ Watch":"👀🟢","TMN- Watch":"👀🔴"}
     emoji  = EMAP.get(signal,"🔔")
     q_icon = "🟢" if analysis["quality"]=="STRONG" else "🟡" if analysis["quality"]=="MODERATE" else "🔴"
     c_icon = "🟢" if analysis["confidence"]>=70 else "🟡" if analysis["confidence"]>=50 else "🔴"
@@ -266,61 +199,54 @@ def send_telegram(payload, analysis):
         f"{c_icon} <b>Confidence: {int(analysis['confidence'])}%</b>"
     )
 
+# ── WEBHOOK ───────────────────────────────────────────────
 @app.route("/webhook", methods=["POST"])
 def webhook():
     global latest_signal
     try:
         payload = request.get_json(force=True)
         if not payload:
-            log.error("Empty payload received")
-            return jsonify({"error": "empty"}), 400
+            log.error("Empty payload")
+            return jsonify({"error":"empty"}), 400
 
         signal = payload.get("signal","")
-        log.info(f"Webhook received: signal={signal} symbol={payload.get('symbol')} price={payload.get('price')}")
-        log.info(f"Full payload: {json.dumps(payload)}")
+        log.info(f"Webhook: {signal} {payload.get('symbol')} @ {payload.get('price')}")
+        log.info(f"Payload: {json.dumps(payload)}")
 
-        allowed = ["TMN+","TMN-","BUY","SELL","TMN+ Watch","TMN- Watch","BIAS CHANGE","PROJ CHANGE","DO NOTHING","STMN+","STMN-"]
+        allowed = ["TMN+","TMN-","BUY","SELL","TMN+ Watch","TMN- Watch",
+                   "BIAS CHANGE","PROJ CHANGE","DO NOTHING","STMN+","STMN-"]
         if signal not in allowed:
-            log.info(f"Signal '{signal}' not in allowed list — ignored")
-            return jsonify({"status":"ignored","signal":signal}), 200
+            log.info(f"Ignored: {signal}")
+            return jsonify({"status":"ignored"}), 200
 
-        # Only call Claude AI for actual trading signals — not lightweight state changes
-        lightweight = ["BIAS CHANGE","PROJ CHANGE","STMN+","STMN-"]  # DO NOTHING gets AI context
-        if signal in lightweight:
-            analysis = {"quality":"","direction":"","entry":"","sl":"","tp1":"","tp2":"","rr":"","confidence":0,"context":"","raw":""}
-        else:
-            analysis = analyse_signal(payload)
+        lightweight = ["BIAS CHANGE","PROJ CHANGE","STMN+","STMN-"]
+        analysis = ({"quality":"","direction":"","entry":"","sl":"","tp1":"","tp2":"",
+                     "rr":"","confidence":0,"context":"","raw":""}
+                    if signal in lightweight else analyse_signal(payload))
 
-        sent = send_telegram(payload, analysis)
+        send_telegram(payload, analysis)
 
-        latest_signal = {
-            **payload,
-            **analysis,
-            "timestamp": datetime.now(SGT).strftime("%Y-%m-%dT%H:%M:%S+08:00")
-        }
+        latest_signal = {**payload, **analysis,
+                         "timestamp": datetime.now(SGT).strftime("%Y-%m-%dT%H:%M:%S+08:00")}
 
-        return jsonify({"status":"sent" if sent else "telegram_failed","signal":signal}), 200
+        return jsonify({"status":"ok"}), 200
 
     except Exception as e:
         log.error(f"Webhook error: {e}", exc_info=True)
         return jsonify({"error":str(e)}), 500
 
-
 @app.route("/latest", methods=["GET"])
 def latest():
     return jsonify(latest_signal), 200
 
-
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({
-        "status":        "ok",
-        "version":       "1.2",
-        "anthropic_key": "set" if ANTHROPIC_API_KEY else "MISSING",
+        "status":"ok","version":"1.3",
+        "anthropic_key":"set" if ANTHROPIC_API_KEY else "MISSING",
         "telegram_token":"set" if TELEGRAM_BOT_TOKEN else "MISSING",
-        "telegram_chat": "set" if TELEGRAM_CHAT_ID else "MISSING"
+        "telegram_chat":"set" if TELEGRAM_CHAT_ID else "MISSING",
     }), 200
-
 
 if __name__ == "__main__":
     log.info(f"Starting on port {PORT}")
