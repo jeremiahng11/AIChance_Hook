@@ -1,5 +1,5 @@
 """
-AI Chance v1.2 — Webhook Server
+AI Chance v1.3 — Webhook Server
 """
 
 import os
@@ -68,6 +68,48 @@ def analyse_signal(payload):
     zone = ("ABOVE SELL THRESHOLD" if price >= sell_thresh
             else "BELOW BUY THRESHOLD" if price <= buy_thresh
             else "NEUTRAL ZONE")
+
+    # DO NOTHING gets a focused explanation instead of trade setup
+    if signal == "DO NOTHING":
+        prompt = f"""You are an expert trading analyst for {sym_mode} ({symbol}) on a {timeframe}m chart.
+
+The AI Chance indicator has determined NO TRADE should be taken right now.
+
+Market context:
+Price: {price} | ATR: {atr} | RSI: {rsi}
+Bias Score: {bias_score} | Bias: {"BULL" if bias_score >= 2 else "BEAR" if bias_score <= -2 else "NEUTRAL"}
+HTF: {htf} | A5 Distance: {a5_dist}x | STMN: {"YES" if stmn else "NO"}
+Projection: {projection}
+Buy Thresh: {buy_thresh} | Sell Thresh: {sell_thresh} | Zone: {zone}
+
+Respond in EXACTLY this format:
+
+REASON: [1 sentence explaining WHY no trade — what specific condition is preventing a clean entry]
+WATCH: [1 sentence on what to watch for next — the specific price level or event that would change this]
+CONFIDENCE: [0-100]"""
+
+        try:
+            response = client.messages.create(
+                model="claude-sonnet-4-20250514",
+                max_tokens=150,
+                messages=[{"role": "user", "content": prompt}]
+            )
+            text = response.content[0].text
+            def extract(key):
+                import re
+                m = re.search(rf"^{key}:\s*(.+)$", text, re.MULTILINE)
+                return m.group(1).strip() if m else ""
+            return {
+                "quality": "WAIT", "direction": "WAIT",
+                "entry": "", "sl": "", "tp1": "", "tp2": "", "rr": "",
+                "confidence": float(extract("CONFIDENCE") or 0),
+                "context": extract("REASON"),
+                "dn_watch_ai": extract("WATCH"),
+                "raw": text
+            }
+        except Exception as e:
+            log.error(f"Claude DO NOTHING error: {e}")
+            return {"quality":"","direction":"","entry":"","sl":"","tp1":"","tp2":"","rr":"","confidence":0,"context":"No clear edge — wait for better setup","dn_watch_ai":"","raw":""}
 
     prompt = f"""You are an expert trading analyst for {sym_mode} ({symbol}) on a {timeframe}m chart.
 
@@ -173,15 +215,18 @@ def send_telegram(payload, analysis):
         )
 
     if signal == "DO NOTHING":
-        dn_reason = payload.get("dn_reason","no clear edge")
-        dn_watch  = payload.get("dn_watch","")
+        dn_reason  = analysis.get("context","") or payload.get("dn_reason","No clear edge")
+        dn_watch   = analysis.get("dn_watch_ai","") or payload.get("dn_watch","Watch bias label for direction")
+        confidence = int(analysis.get("confidence", 0))
+        c_icon     = "🟢" if confidence >= 70 else "🟡" if confidence >= 50 else "🔴"
         return post_msg(
             f"⏸ <b>DO NOTHING — {payload.get('symbol')} {payload.get('timeframe')}m</b>\n"
             f"Price: {payload.get('price')} · {ts}\n"
             f"{'─'*28}\n\n"
             f"<b>Reason:</b> {dn_reason}\n\n"
-            f"<b>{dn_watch}</b>\n\n"
-            f"Bias: {bias_dir} | Proj: {projection} | HTF: {payload.get('htf')}"
+            f"<b>Watch:</b> {dn_watch}\n\n"
+            f"Bias: {bias_dir} | Proj: {projection} | HTF: {payload.get('htf')}\n"
+            f"{c_icon} Confidence: {confidence}%"
         )
 
     if signal in ("STMN+", "STMN-"):
@@ -240,7 +285,7 @@ def webhook():
             return jsonify({"status":"ignored","signal":signal}), 200
 
         # Only call Claude AI for actual trading signals — not lightweight state changes
-        lightweight = ["BIAS CHANGE","PROJ CHANGE","DO NOTHING","STMN+","STMN-"]
+        lightweight = ["BIAS CHANGE","PROJ CHANGE","STMN+","STMN-"]  # DO NOTHING gets AI context
         if signal in lightweight:
             analysis = {"quality":"","direction":"","entry":"","sl":"","tp1":"","tp2":"","rr":"","confidence":0,"context":"","raw":""}
         else:
